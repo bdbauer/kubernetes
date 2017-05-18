@@ -1070,6 +1070,11 @@
 			"Rev": "deaf2c9013bc1a7f4c774662259a506ba874d80f"
 		},
 		{
+			"ImportPath": "github.com/go-sql-driver/mysql",
+			"Comment": "v1.3-18-g382e13d",
+			"Rev": "382e13d099fcf5f5994290892ab258fbebbdc5e3"
+		},
+		{
 			"ImportPath": "github.com/godbus/dbus",
 			"Comment": "v3",
 			"Rev": "c7fdd8b5cd55e87b4e1f4e372cdb1db61dd6c66f"

@@ -23,4 +23,20 @@ spec:
   - name: mysql
     port: 3306
   selector:
+      app: mysql
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-write
+  labels:
     app: mysql
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+  selector:
+    app: mysql
+    writer: writer
+  type: LoadBalancer

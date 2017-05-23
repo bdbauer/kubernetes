@@ -57,9 +57,9 @@ var _ = framework.KubeDescribe("Upgrade [Feature:Upgrade]", func() {
 			framework.ExpectNoError(err)
 
 			cm := chaosmonkey.New(func() {
-				target := upgCtx.Versions[1].Version.String()
-				framework.ExpectNoError(framework.MasterUpgrade(target))
-				framework.ExpectNoError(framework.CheckMasterVersion(f.ClientSet, target))
+				//target := upgCtx.Versions[1].Version.String()
+				//framework.ExpectNoError(framework.MasterUpgrade(target))
+				//framework.ExpectNoError(framework.CheckMasterVersion(f.ClientSet, target))
 			})
 			for _, t := range upgradeTests {
 				cma := chaosMonkeyAdapter{

@@ -59,33 +59,7 @@ func (MySqlUpgradeTest) Skip(upgCtx UpgradeContext) bool {
 
 // Setup creates a StatefulSet and a HeadlessService. It verifies the basic SatefulSet properties
 func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
-	/*
-	ssName := "ss"
-	labels := map[string]string{
-		"foo": "bar",
-		"baz": "blah",
-	}
-	*/
-
-
-	// Set up Volumes?
-	// Create config map
-	// Create Both Services
-	// CreateStatefulSet
-
-	// Create database / table
-	// Insert some data
-	// Read data
-	// Start disruption
-	// Continue reading data
-	// End disruption
-	// Read data
-
-
-
-	//t.tester = framework.NewStatefulSetTester(f.ClientSet)
 	ns := f.Namespace.Name
-
 	/*
 	pv1 := &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -148,21 +122,14 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	By("Creating a configmap")
 	configMapYaml := mkpath("configmap.yaml")
 	framework.RunKubectlOrDie("create", "-f", configMapYaml, fmt.Sprintf("--namespace=%s", ns))
-	// Maybe wait for map to create?
 
 	By("Create services to access resources")
 	servicesYaml := mkpath("services.yaml")
 	framework.RunKubectlOrDie("create", "-f", servicesYaml, fmt.Sprintf("--namespace=%s", ns))
-	// Maybe wait for services to create?
 
 	By("Creating a mysql StatefulSet")
 	ssYaml := mkpath("statefulset.yaml")
 	framework.RunKubectlOrDie("create", "-f", ssYaml, fmt.Sprintf("--namespace=%s", ns))
-
-
-	//nsFlag := fmt.Sprintf("--namespace=%v", ns)
-
-	//time.Sleep(time.Minute * 5)
 
 	By("Waiting for the statefulset's pods to be running")
 
@@ -196,21 +163,15 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 		})
 	Expect(err).NotTo(HaveOccurred())
 
-
 	By("Adding the writer=writer label to mysql-0")
 
 	pod, err := f.ClientSet.CoreV1().Pods(ns).Get("mysql-0", metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
-	framework.Logf("POD WAS: %v", pod)
-
-	// add label
 	pod.ObjectMeta.Labels["writer"] = "writer"
 
-	pod, err = f.ClientSet.CoreV1().Pods(ns).Update(pod)
+	_, err = f.ClientSet.CoreV1().Pods(ns).Update(pod)
 	Expect(err).NotTo(HaveOccurred())
-
-	framework.Logf("POD AFTER UPDATE WAS: %v", pod)
 
 	/*
 	output := framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-0.mysql", "-e", "CREATE DATABASE testing;")
@@ -233,6 +194,7 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 
 
 
+	// TODO(): use already implemented retry logic here. Just quick wrote this for temp fix.
 	var ip string
 	retries := 0
 	keepGoing := true
@@ -262,8 +224,6 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	By("Opening and connecting to the database")
 	db, err := sql.Open("mysql", s)
 	Expect(err).NotTo(HaveOccurred())
-	//t.db = db
-	//defer db.Close()
 
 	err = db.Ping()
 	Expect(err).NotTo(HaveOccurred())
@@ -301,6 +261,49 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	rows, err := db.Query("SELECT * FROM testing.users")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("rows was: %v", rows)
+
+	defer rows.Close()
+	for rows.Next() {
+		var user string
+		err = rows.Scan(&user)
+		Expect(err).NotTo(HaveOccurred())
+		framework.Logf("Name from row was: %s", user)
+	}
+	err = rows.Err()
+	Expect(err).NotTo(HaveOccurred())
+
+	By("Setting up connection to read data during test")
+	retries = 0
+	keepGoing = true
+	for keepGoing {
+		service, err := f.ClientSet.CoreV1().Services(ns).Get("mysql-read", metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		framework.Logf("Service was: %v", service)
+		ingress := service.Status.LoadBalancer.Ingress
+		framework.Logf("Ingress was: %v", ingress)
+		if len(ingress) > 0 {
+			ip = ingress[0].IP
+			framework.Logf("Ip was: %v", ip)
+			retries = 30
+		} else {
+			time.Sleep(time.Second * 20)
+		}
+		framework.Logf("Didn't get IP from service, waiting then trying again")
+		retries++
+		if retries > 30 {
+			keepGoing = false
+		}
+	}
+	framework.Logf("ip is: %s", ip)
+	s = "root:@tcp([" + ip + "]:3306)/"
+
+	By("Opening and connecting to the database")
+	db, err = sql.Open("mysql", s)
+	Expect(err).NotTo(HaveOccurred())
+	t.db = db
+
+	err = t.db.Ping()
+	Expect(err).NotTo(HaveOccurred())
 
 
 
@@ -407,8 +410,25 @@ func (t *MySqlUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, up
 		//framework.Logf("Output was: %q", output)
 		//framework.Logf("Error was : %v", err)
 
+		rows, err := t.db.Query("SELECT * FROM testing.users")
+		if err != nil {
+			framework.Logf("Error while reading during test. Err: %v", err)
+		}
+		framework.Logf("During test, rows was: %v", rows)
 
-		//TODO: do polling here somehow.
+		defer rows.Close()
+		for rows.Next() {
+			var user string
+			err = rows.Scan(&user)
+			if err != nil {
+				framework.Logf("Error while converting row into user during test. Err: %v", err)
+			}
+			framework.Logf("Name from row was: %s", user)
+		}
+		err = rows.Err()
+		if err != nil {
+			framework.Logf("Error after all rows. Err: %v", err)
+		}
 	}, framework.Poll, done)
 }
 

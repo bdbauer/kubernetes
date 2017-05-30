@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: mysql
-        image: mysql:5.7
+        image: mysql:5.7.15
         env:
         - name: MYSQL_ALLOW_EMPTY_PASSWORD
           value: "1"
@@ -145,3 +145,15 @@ spec:
       resources:
         requests:
           storage: 10Gi
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+ name: mysql-pdb 
+ labels:
+   pdb: mysql
+spec:
+ minAvailable: 2
+ selector:
+   matchLabels:
+     app: mysql

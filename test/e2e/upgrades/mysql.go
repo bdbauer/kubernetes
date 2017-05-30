@@ -31,20 +31,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/api/v1"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-	//apps "k8s.io/kubernetes/pkg/apis/apps/v1beta1"
 	"k8s.io/kubernetes/pkg/util/version"
 	"k8s.io/kubernetes/test/e2e/framework"
 )
 
 // StatefulSetUpgradeTest implements an upgrade test harness for StatefulSet upgrade testing.
 type MySqlUpgradeTest struct {
-	//tester  *framework.StatefulSetTester
-	//service *v1.Service
-	//set     *apps.StatefulSet
 	db *sql.DB
+	success int
+	failure int
 }
 
-func (MySqlUpgradeTest) Name() string { return "postgres-upgrade" }
+func (MySqlUpgradeTest) Name() string { return "mysql-upgrade" }
 
 func (MySqlUpgradeTest) Skip(upgCtx UpgradeContext) bool {
 	minVersion := version.MustParseSemantic("1.4.0")
@@ -60,61 +58,8 @@ func (MySqlUpgradeTest) Skip(upgCtx UpgradeContext) bool {
 // Setup creates a StatefulSet and a HeadlessService. It verifies the basic SatefulSet properties
 func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	ns := f.Namespace.Name
-	/*
-	pv1 := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pv1",
-		},
-		Spec: v1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): resource.MustParse("10Gi"),
-			},
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				HostPath: &v1.HostPathVolumeSource{Path: "/data/1"},
-			},
-		},
-	}
-	pv1, err := f.ClientSet.Core().PersistentVolumes().Create(pv1)
-	Expect(err).NotTo(HaveOccurred())
-
-	pv2 := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pv2",
-		},
-		Spec: v1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): resource.MustParse("10Gi"),
-			},
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				HostPath: &v1.HostPathVolumeSource{Path: "/data/2"},
-			},
-		},
-	}
-	pv2, err = f.ClientSet.Core().PersistentVolumes().Create(pv2)
-	Expect(err).NotTo(HaveOccurred())
-
-	pv3 := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pv3",
-		},
-		Spec: v1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): resource.MustParse("10Gi"),
-			},
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				HostPath: &v1.HostPathVolumeSource{Path: "/data/3"},
-			},
-		},
-	}
-	pv3, err = f.ClientSet.Core().PersistentVolumes().Create(pv3)
-	Expect(err).NotTo(HaveOccurred())
-	*/
+	t.success = 0
+	t.failure = 0
 	mkpath := func(file string) string {
 		return filepath.Join(framework.TestContext.RepoRoot, "test/e2e/testing-manifests", file)
 	}
@@ -123,7 +68,7 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	configMapYaml := mkpath("configmap.yaml")
 	framework.RunKubectlOrDie("create", "-f", configMapYaml, fmt.Sprintf("--namespace=%s", ns))
 
-	By("Create services to access resources")
+	By("Create services")
 	servicesYaml := mkpath("services.yaml")
 	framework.RunKubectlOrDie("create", "-f", servicesYaml, fmt.Sprintf("--namespace=%s", ns))
 
@@ -132,7 +77,6 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	framework.RunKubectlOrDie("create", "-f", ssYaml, fmt.Sprintf("--namespace=%s", ns))
 
 	By("Waiting for the statefulset's pods to be running")
-
 	statefulsetPoll := 30 * time.Second
 	statefulsetTimeout := 10 * time.Minute
 	// Maybe get next values straight from yaml instead? dono how
@@ -164,7 +108,6 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Adding the writer=writer label to mysql-0")
-
 	pod, err := f.ClientSet.CoreV1().Pods(ns).Get("mysql-0", metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -173,27 +116,7 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	_, err = f.ClientSet.CoreV1().Pods(ns).Update(pod)
 	Expect(err).NotTo(HaveOccurred())
 
-	/*
-	output := framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-0.mysql", "-e", "CREATE DATABASE testing;")
-	By("Seeing what output is: " + output)
-	time.Sleep(5 * time.Second)
-
-	output = framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-0.mysql", "-e", "CREATE TABLE testing.users (name VARCHAR(150) NOT NULL, PRIMARY KEY (name));")
-	By("Seeing what output is: " + output)
-	time.Sleep(5 * time.Second)
-
-	output = framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-0.mysql", "-e", "INSERT INTO testing.users (name) VALUES ('Ben');")
-	By("Seeing what output is: " + output)
-	time.Sleep(5 * time.Second)
-
-	output = framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-read", "-e", "SELECT * FROM testing.users;")
-	By("Seeing what output is: " + output)
-	time.Sleep(5 * time.Second)
-
-	*/
-
-
-
+	By("Waiting for the service's external IP to be available")
 	// TODO(): use already implemented retry logic here. Just quick wrote this for temp fix.
 	var ip string
 	retries := 0
@@ -210,18 +133,17 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 			retries = 30
 		} else {
 			time.Sleep(time.Second * 20)
+			framework.Logf("Didn't get IP from service, waiting then trying again")
 		}
-		framework.Logf("Didn't get IP from service, waiting then trying again")
 		retries++
 		if retries > 30 {
 			keepGoing = false
 		}
 	}
-	framework.Logf("ip is: %s", ip)
-	s := "root:@tcp([" + ip + "]:3306)/"
 
+	s := "root@tcp(" + ip + ":3306)/"
 
-	By("Opening and connecting to the database")
+	By("Opening and connecting to the database using the writer service")
 	db, err := sql.Open("mysql", s)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -230,38 +152,27 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 
 	By("Inserting some basic data into the database")
 
-	stmt, err := db.Prepare("CREATE DATABASE testing")
-	Expect(err).NotTo(HaveOccurred())
-	framework.Logf("stmt was: %v", stmt)
-
-	res, err := stmt.Exec()
+	res, err := db.Exec("CREATE DATABASE testing;")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("res was: %v", res)
 
-	stmt, err = db.Prepare("CREATE TABLE testing.users (name VARCHAR(150) NOT NULL, PRIMARY KEY (name))")
-	Expect(err).NotTo(HaveOccurred())
-	framework.Logf("stmt was: %v", stmt)
-
-	res, err = stmt.Exec()
+	res, err = db.Exec("CREATE TABLE testing.users (name VARCHAR(150) NOT NULL, PRIMARY KEY (name));")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("res was: %v", res)
 
-	stmt, err = db.Prepare("INSERT INTO testing.users (name) VALUES(?)")
-	Expect(err).NotTo(HaveOccurred())
-	framework.Logf("stmt was: %v", stmt)
-
-	res, err = stmt.Exec("Ben")
+	res, err = db.Exec("INSERT INTO testing.users (name) VALUES(?);", "Ben")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("res was: %v", res)
 
-	res, err = stmt.Exec("Maisem")
+	res, err = db.Exec("INSERT INTO testing.users (name) VALUES(?);", "Maisem")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("res was: %v", res)
 
-	rows, err := db.Query("SELECT * FROM testing.users")
+	rows, err := db.Query("SELECT * FROM testing.users;")
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("rows was: %v", rows)
 
+	By("Making sure the input data is queryable")
 	defer rows.Close()
 	for rows.Next() {
 		var user string
@@ -272,7 +183,10 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	err = rows.Err()
 	Expect(err).NotTo(HaveOccurred())
 
-	By("Setting up connection to read data during test")
+	By("Closing the database")
+	db.Close()
+
+	By("Waiting for the read service's external ip to be available")
 	retries = 0
 	keepGoing = true
 	for keepGoing {
@@ -287,176 +201,57 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 			retries = 30
 		} else {
 			time.Sleep(time.Second * 20)
+			framework.Logf("Didn't get IP from service, waiting then trying again")
 		}
-		framework.Logf("Didn't get IP from service, waiting then trying again")
 		retries++
 		if retries > 30 {
 			keepGoing = false
 		}
 	}
 	framework.Logf("ip is: %s", ip)
-	s = "root:@tcp([" + ip + "]:3306)/"
+	s = "root@tcp(" + ip + ":3306)/"
 
-	By("Opening and connecting to the database")
+	By("Opening and connecting to the database using the read service for use during the upgrade")
 	db, err = sql.Open("mysql", s)
 	Expect(err).NotTo(HaveOccurred())
 	t.db = db
 
 	err = t.db.Ping()
 	Expect(err).NotTo(HaveOccurred())
-
-
-
-
-
-	//stmt, err := db.Prepare("CREATE TABLE users ")
-	// check err
-
-	/*
-	manifestPath := "./yamls/"
-	mkpath := func(file string) string {
-		return filepath.Join(manifestPath, file)
-	}
-	pvYaml := generated.ReadOrDie(mkpath("storage.yaml"))
-	framework.RunKubectlOrDieInput(string(pvYaml[:]), "create", "-f", "-", fmt.Sprintf("--namespace=%v", ns))
-
-	*/
-	/*
-
-	svcName := "test"
-	statefulPodMounts := []v1.VolumeMount{{Name: "datadir", MountPath: "/data/"}}
-	ns := f.Namespace.Name
-
-	By("Creating the stateful set")
-	t.set = CreateStatefulSet(ssName, ns, svcName, 2, statefulPodMounts, labels)
-	// t.set = framework.NewStatefulSet(ssName, ns, headlessSvcName, 2, statefulPodMounts, podMounts, labels)
-
-	By("Creating the stateful service")
-	t.service = framework.CreateStatefulSetService(ssName, labels)
-	// *(t.set.Spec.Replicas) = 3
-	//
-	By("Setting the initialized anotation")
-	framework.SetStatefulSetInitializedAnnotation(t.set, "false")
-
-	By("Creating service " + svcName + " in namespace " + ns)
-	_, err := f.ClientSet.Core().Services(ns).Create(t.service)
-	Expect(err).NotTo(HaveOccurred())
-	t.tester = framework.NewStatefulSetTester(f.ClientSet)
-
-	By("Creating statefulset " + ssName + " in namespace " + ns)
-	// *(t.set.Spec.Replicas) = 3
-	t.set, err = f.ClientSet.Apps().StatefulSets(ns).Create(t.set)
-	Expect(err).NotTo(HaveOccurred())
-
-	By("Saturating stateful set " + t.set.Name)
-	t.tester.Saturate(t.set)
-	t.verify()
-	t.restart()
-	t.verify()
-	*/
 }
 
-
-
-/*
-func CreateStatefulSet(name, ns, svcName string, replicas int32, mounts []v1.VolumeMount, labels map[string]string) *apps.StatefulSet {
-	claims := []v1.PersistentVolumeClaim{}
-	for _, m := range mounts {
-		claims = append(claims, framework.NewStatefulSetPVC(m.Name))
-	}
-
-	return &apps.StatefulSet{
-		TypeMeta: metav1.TypeMeta{
-			Kind: "StatefulSet",
-			APIVersion: "apps/v1beta1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Namespace: ns,
-		},
-		Spec: apps.StatefulSetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Replicas: func(i int32) *int32 { return &i }(replicas),
-			Template: v1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-					Annotations: map[string]string{},
-				},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: "pg",
-							Image: "postgres",
-							VolumeMounts: mounts,
-						},
-					},
-					// Maybe add volumes here
-				},
-			},
-			VolumeClaimTemplates: claims,
-			ServiceName: svcName,
-		},
-	}
-}
-*/
-
-// Waits for the upgrade to complete and verifies the StatefulSet basic functionality
+// The test continually polls the database for the data that was inserted earlier
 func (t *MySqlUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upgrade UpgradeType) {
 	By("Continuously polling the database for inserted info")
 	wait.Until(func() {
-		//output, err := framework.RunKubectl("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-read", "-e", "SELECT * FROM testing.users;")
-		//framework.Logf("Output was: %q", output)
-		//framework.Logf("Error was : %v", err)
-
 		rows, err := t.db.Query("SELECT * FROM testing.users")
 		if err != nil {
 			framework.Logf("Error while reading during test. Err: %v", err)
 		}
 		framework.Logf("During test, rows was: %v", rows)
-
-		defer rows.Close()
-		for rows.Next() {
-			var user string
-			err = rows.Scan(&user)
-			if err != nil {
-				framework.Logf("Error while converting row into user during test. Err: %v", err)
+		if rows != nil {
+			for rows.Next() {
+				var user string
+				err = rows.Scan(&user)
+				if err != nil {
+					framework.Logf("Error while converting row into user during test. Err: %v", err)
+				}
+				framework.Logf("Name from row was: %s", user)
 			}
-			framework.Logf("Name from row was: %s", user)
-		}
-		err = rows.Err()
-		if err != nil {
-			framework.Logf("Error after all rows. Err: %v", err)
+			err = rows.Err()
+			if err != nil {
+				framework.Logf("Error after all rows. Err: %v", err)
+			} else {
+				t.success = t.success + 1
+			}
+		} else {
+			t.failure = t.failure + 1
 		}
 	}, framework.Poll, done)
+	framework.Logf("Success was: %d", t.success)
+	framework.Logf("Failure was: %d", t.failure)
 }
 
-// Deletes all StatefulSets
+// Currently does nothing. Maybe should make sure the service still works, the data is still there, etc.
 func (t *MySqlUpgradeTest) Teardown(f *framework.Framework) {
-	//framework.DeleteAllStatefulSets(f.ClientSet, t.set.Name)
-	//output := framework.RunKubectlOrDie("run", "mysql-client", "--image=mysql:5.7", "-i", "-t", "--rm", "--restart=Never", "--", "mysql", "-h", "mysql-read", "-e", "SELECT * FROM testing.users;")
-	//framework.Logf("Output was: %q", output)
 }
-/*
-func (t *PostgresUpgradeTest) verify() {
-	By("Verifying statefulset mounted data directory is usable")
-	framework.ExpectNoError(t.tester.CheckMount(t.set, "/data"))
-
-	By("Verifying statefulset provides a stable hostname for each pod")
-	framework.ExpectNoError(t.tester.CheckHostname(t.set))
-
-	By("Verifying statefulset set proper service name")
-	framework.ExpectNoError(t.tester.CheckServiceName(t.set, t.set.Spec.ServiceName))
-
-	cmd := "echo $(hostname) > /data/hostname; sync;"
-	By("Running " + cmd + " in all stateful pods")
-	framework.ExpectNoError(t.tester.ExecInStatefulPods(t.set, cmd))
-}
-
-func (t *PostgresUpgradeTest) restart() {
-	By("Restarting statefulset " + t.set.Name)
-	t.tester.Restart(t.set)
-	t.tester.Saturate(t.set)
-}
-*/

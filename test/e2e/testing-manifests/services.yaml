@@ -37,6 +37,5 @@ spec:
   - name: mysql
     port: 3306
   selector:
-    app: mysql
     writer: writer
   type: LoadBalancer

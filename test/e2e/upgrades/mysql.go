@@ -35,7 +35,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 )
 
-// StatefulSetUpgradeTest implements an upgrade test harness for StatefulSet upgrade testing.
+// MySqlUpgradeTest implements an upgrade test harness for polling a replicated sql database.
 type MySqlUpgradeTest struct {
 	db *sql.DB
 	success int
@@ -55,11 +55,16 @@ func (MySqlUpgradeTest) Skip(upgCtx UpgradeContext) bool {
 	return false
 }
 
-// Setup creates a StatefulSet and a HeadlessService. It verifies the basic SatefulSet properties
+// Setup creates a StatefulSet, HeadlessService, a Service to write to the db, and a Service to read
+// from the db. It then connects to the db with the write Service and populates the db with a table
+// and a few entries. Finally, it connects to the db with the read Service, and confirms the data is
+// available. The read connection is left open to be used later in the test.
 func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	ns := f.Namespace.Name
+
 	t.success = 0
 	t.failure = 0
+
 	mkpath := func(file string) string {
 		return filepath.Join(framework.TestContext.RepoRoot, "test/e2e/testing-manifests", file)
 	}
@@ -76,11 +81,13 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	ssYaml := mkpath("statefulset.yaml")
 	framework.RunKubectlOrDie("create", "-f", ssYaml, fmt.Sprintf("--namespace=%s", ns))
 
-	By("Waiting for the statefulset's pods to be running")
+	By("Waiting for the StatefulSet's pods to be running")
 	statefulsetPoll := 30 * time.Second
 	statefulsetTimeout := 10 * time.Minute
-	// Maybe get next values straight from yaml instead? dono how
+
+	// numPets has to match the value from the SS. In future, could fetch value from file.
 	numPets := 3
+	// same with labels matching SS.
 	label := labels.SelectorFromSet(labels.Set(map[string]string{"app": "mysql"}))
 
 	err := wait.PollImmediate(statefulsetPoll, statefulsetTimeout,
@@ -107,7 +114,7 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 		})
 	Expect(err).NotTo(HaveOccurred())
 
-	By("Adding the writer=writer label to mysql-0")
+	By("Adding Labels[\"writer\"] = \"writer\" to pod mysql-0, used to connect with the write Service.")
 	pod, err := f.ClientSet.CoreV1().Pods(ns).Get("mysql-0", metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -116,7 +123,7 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	_, err = f.ClientSet.CoreV1().Pods(ns).Update(pod)
 	Expect(err).NotTo(HaveOccurred())
 
-	By("Waiting for the service's external IP to be available")
+	By("Waiting for the write Service's external IP to be available.")
 	// TODO(): use already implemented retry logic here. Just quick wrote this for temp fix.
 	var ip string
 	retries := 0
@@ -124,12 +131,9 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	for keepGoing {
 		service, err := f.ClientSet.CoreV1().Services(ns).Get("mysql-write", metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		framework.Logf("Service was: %v", service)
 		ingress := service.Status.LoadBalancer.Ingress
-		framework.Logf("Ingress was: %v", ingress)
 		if len(ingress) > 0 {
 			ip = ingress[0].IP
-			framework.Logf("Ip was: %v", ip)
 			retries = 30
 		} else {
 			time.Sleep(time.Second * 20)
@@ -143,14 +147,14 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 
 	s := "root@tcp(" + ip + ":3306)/"
 
-	By("Opening and connecting to the database using the writer service")
+	By("Connecting to the database using the write Service.")
 	db, err := sql.Open("mysql", s)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = db.Ping()
 	Expect(err).NotTo(HaveOccurred())
 
-	By("Inserting some basic data into the database")
+	By("Inserting some basic data into the database.")
 
 	res, err := db.Exec("CREATE DATABASE testing;")
 	Expect(err).NotTo(HaveOccurred())
@@ -172,32 +176,17 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 	Expect(err).NotTo(HaveOccurred())
 	framework.Logf("rows was: %v", rows)
 
-	By("Making sure the input data is queryable")
-	defer rows.Close()
-	for rows.Next() {
-		var user string
-		err = rows.Scan(&user)
-		Expect(err).NotTo(HaveOccurred())
-		framework.Logf("Name from row was: %s", user)
-	}
-	err = rows.Err()
-	Expect(err).NotTo(HaveOccurred())
-
-	By("Closing the database")
 	db.Close()
 
-	By("Waiting for the read service's external ip to be available")
+	By("Waiting for the read Service's external IP to be available.")
 	retries = 0
 	keepGoing = true
 	for keepGoing {
 		service, err := f.ClientSet.CoreV1().Services(ns).Get("mysql-read", metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		framework.Logf("Service was: %v", service)
 		ingress := service.Status.LoadBalancer.Ingress
-		framework.Logf("Ingress was: %v", ingress)
 		if len(ingress) > 0 {
 			ip = ingress[0].IP
-			framework.Logf("Ip was: %v", ip)
 			retries = 30
 		} else {
 			time.Sleep(time.Second * 20)
@@ -208,50 +197,75 @@ func (t *MySqlUpgradeTest) Setup(f *framework.Framework) {
 			keepGoing = false
 		}
 	}
-	framework.Logf("ip is: %s", ip)
 	s = "root@tcp(" + ip + ":3306)/"
 
-	By("Opening and connecting to the database using the read service for use during the upgrade")
+	By("Connecting to the database using the read service.")
 	db, err = sql.Open("mysql", s)
 	Expect(err).NotTo(HaveOccurred())
 	t.db = db
 
 	err = t.db.Ping()
 	Expect(err).NotTo(HaveOccurred())
+
+	By("Confirming the data is available before starting the upgrade.")
+	err = t.CheckRows()
+	Expect(err).NotTo(HaveOccurred())
 }
 
-// The test continually polls the database for the data that was inserted earlier
+// Test continually polls the db using the read Service connection, checking to see if the data
+// inserted earlier is available.
 func (t *MySqlUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upgrade UpgradeType) {
-	By("Continuously polling the database for inserted info")
+	By("Continuously polling the database during upgrade.")
 	wait.Until(func() {
-		rows, err := t.db.Query("SELECT * FROM testing.users")
+		err := t.CheckRows()
 		if err != nil {
-			framework.Logf("Error while reading during test. Err: %v", err)
-		}
-		framework.Logf("During test, rows was: %v", rows)
-		if rows != nil {
-			for rows.Next() {
-				var user string
-				err = rows.Scan(&user)
-				if err != nil {
-					framework.Logf("Error while converting row into user during test. Err: %v", err)
-				}
-				framework.Logf("Name from row was: %s", user)
-			}
-			err = rows.Err()
-			if err != nil {
-				framework.Logf("Error after all rows. Err: %v", err)
-			} else {
-				t.success = t.success + 1
-			}
-		} else {
+			framework.Logf("Error while trying to confirm data: %v", err)
 			t.failure = t.failure + 1
+		} else {
+			t.success = t.success + 1
 		}
 	}, framework.Poll, done)
+
 	framework.Logf("Success was: %d", t.success)
 	framework.Logf("Failure was: %d", t.failure)
 }
 
-// Currently does nothing. Maybe should make sure the service still works, the data is still there, etc.
+// Teardown does one final check of the data's availability.
 func (t *MySqlUpgradeTest) Teardown(f *framework.Framework) {
+	err := t.CheckRows()
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// Checks to make sure the values "Ben" and "Maisem" are in the table testing.users.
+func (t *MySqlUpgradeTest) CheckRows() error {
+	var user string
+
+	rows, err := t.db.Query("SELECT * FROM testing.users;")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	// Check first value, should be "Ben"
+	if !rows.Next() {
+		return fmt.Errorf("rows.Next() returned false. Expected another row to exist.")
+	}
+	err = rows.Scan(&user)
+	if err != nil {
+		return err
+	}
+	if user != "Ben" {
+		return fmt.Errorf("Unexpected value reading from table. Got: %s, want: Ben.", user)
+	}
+	// Check second value, should be "Maisem"
+	if !rows.Next() {
+		return fmt.Errorf("rows.Next() returned false. Expected another row to exist.")
+	}
+	err = rows.Scan(&user)
+	if err != nil {
+		return err
+	}
+	if user != "Maisem" {
+		return fmt.Errorf("Unexpected value reading from table. Got: %s, want: Maisem.", user)
+	}
+	return nil
 }
